@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Employee Management</title>
+  <style>
+    :root { font-family: Inter, Arial, sans-serif; color: #172033; background: #f4f7fb; }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    header { background: #14213d; color: white; padding: 24px max(20px, calc((100% - 1100px)/2)); }
+    header h1 { margin: 0 0 6px; font-size: 26px; }
+    header p { margin: 0; color: #cbd5e1; }
+    main { max-width: 1100px; margin: 28px auto; padding: 0 20px 40px; }
+    .layout { display: grid; grid-template-columns: 330px 1fr; gap: 22px; align-items: start; }
+    .card { background: white; border: 1px solid #e3e9f2; border-radius: 14px; padding: 20px; box-shadow: 0 5px 18px rgba(20,33,61,.05); }
+    h2 { font-size: 18px; margin: 0 0 18px; }
+    label { display: block; font-size: 13px; font-weight: 650; margin: 13px 0 6px; }
+    input { width: 100%; border: 1px solid #cbd5e1; border-radius: 8px; padding: 11px 12px; font-size: 14px; }
+    input:focus { outline: 2px solid #bfdbfe; border-color: #2563eb; }
+    button { border: 0; border-radius: 8px; padding: 10px 14px; cursor: pointer; font-weight: 650; }
+    button:disabled { opacity: .55; cursor: wait; }
+    .primary { background: #2563eb; color: white; width: 100%; margin-top: 18px; }
+    .secondary { background: #e8eef8; color: #1e293b; }
+    .danger { background: #fee2e2; color: #991b1b; }
+    .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 14px; }
+    .toolbar h2 { margin: 0; }
+    .status { min-height: 22px; margin: 12px 0 0; font-size: 13px; color: #475569; }
+    .status.error { color: #b91c1c; }
+    .status.success { color: #15803d; }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { text-align: left; padding: 13px 10px; border-bottom: 1px solid #edf1f6; white-space: nowrap; }
+    th { color: #64748b; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+    td.actions { display: flex; gap: 7px; }
+    .empty { text-align: center; color: #64748b; padding: 28px 10px; }
+    .hint { color: #64748b; font-size: 12px; line-height: 1.5; margin-top: 12px; }
+    @media (max-width: 800px) { .layout { grid-template-columns: 1fr; } header { padding: 22px 20px; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Employee Management</h1>
+    <p>Manage employee records using AWS API Gateway, Lambda and DynamoDB</p>
+  </header>
+
+  <main>
+    <div class="layout">
+      <section class="card">
+        <h2 id="formTitle">Add Employee</h2>
+        <form id="employeeForm">
+          <label for="employeeId">Employee ID</label>
+          <input id="employeeId" required placeholder="e.g. EMP004">
+          <label for="employeeName">Employee Name</label>
+          <input id="employeeName" required placeholder="e.g. Sourav">
+          <label for="department">Department</label>
+          <input id="department" required placeholder="e.g. DevOps">
+          <label for="salary">Salary</label>
+          <input id="salary" type="number" min="0" step="1" required placeholder="e.g. 75000">
+          <button class="primary" id="submitButton" type="submit">Add Employee</button>
+          <button class="secondary" id="cancelEdit" type="button" style="display:none;width:100%;margin-top:8px">Cancel edit</button>
+        </form>
+        <p class="hint">Employee ID is required and must be unique. To update a record, use the Edit action in the table.</p>
+        <p class="status" id="formStatus" role="status"></p>
+      </section>
+
+      <section class="card">
+        <div class="toolbar">
+          <h2>Employee Records</h2>
+          <button class="secondary" id="refreshButton" type="button">Refresh</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>ID</th><th>Name</th><th>Department</th><th>Salary</th><th>Actions</th></tr></thead>
+            <tbody id="employeeRows"><tr><td colspan="5" class="empty">Loading employees...</td></tr></tbody>
+          </table>
+        </div>
+        <p class="status" id="listStatus" role="status"></p>
+      </section>
+    </div>
+  </main>
+
+  <script>
+    // Your API Gateway HTTP API base URL
+    const API_BASE = "https://jndh8i2d68.execute-api.ap-southeast-2.amazonaws.com";
+
+    const form = document.getElementById("employeeForm");
+    const rows = document.getElementById("employeeRows");
+    const formStatus = document.getElementById("formStatus");
+    const listStatus = document.getElementById("listStatus");
+    const submitButton = document.getElementById("submitButton");
+    const cancelEditButton = document.getElementById("cancelEdit");
+    let editingEmployeeId = null;
+
+    function showStatus(element, message, type = "") {
+      element.textContent = message;
+      element.className = "status" + (type ? " " + type : "");
+    }
+
+    async function apiRequest(path, options = {}) {
+      const response = await fetch(`${API_BASE}${path}`, {
+        ...options,
+        headers: { "Content-Type": "application/json", ...(options.headers || {}) }
+      });
+      const text = await response.text();
+      let data = {};
+      try { data = text ? JSON.parse(text) : {}; } catch { data = { message: text }; }
+      if (!response.ok) throw new Error(data.message || `Request failed (${response.status})`);
+      return data;
+    }
+
+    async function loadEmployees() {
+      rows.innerHTML = '<tr><td colspan="5" class="empty">Loading employees...</td></tr>';
+      showStatus(listStatus, "");
+      try {
+        const data = await apiRequest("/employees");
+        const employees = data.employees || [];
+        if (!employees.length) {
+          rows.innerHTML = '<tr><td colspan="5" class="empty">No employees found.</td></tr>';
+          return;
+        }
+        rows.innerHTML = "";
+        employees.forEach(employee => {
+          const tr = document.createElement("tr");
+          const values = [employee.employeeId, employee.employeeName, employee.department,
+            Number(employee.salary).toLocaleString("en-IN", { maximumFractionDigits: 2 })];
+          values.forEach(value => {
+            const td = document.createElement("td");
+            td.textContent = value ?? "";
+            tr.appendChild(td);
+          });
+          const actions = document.createElement("td");
+          actions.className = "actions";
+          const edit = document.createElement("button");
+          edit.className = "secondary";
+          edit.textContent = "Edit";
+          edit.addEventListener("click", () => startEdit(employee));
+          const remove = document.createElement("button");
+          remove.className = "danger";
+          remove.textContent = "Delete";
+          remove.addEventListener("click", () => deleteEmployee(employee.employeeId));
+          actions.append(edit, remove);
+          tr.appendChild(actions);
+          rows.appendChild(tr);
+        });
+      } catch (error) {
+        rows.innerHTML = '<tr><td colspan="5" class="empty">Could not load employee records.</td></tr>';
+        showStatus(listStatus, error.message + " — Check API URL and API Gateway CORS settings.", "error");
+      }
+    }
+
+    function resetForm() {
+      form.reset();
+      editingEmployeeId = null;
+      document.getElementById("employeeId").disabled = false;
+      document.getElementById("formTitle").textContent = "Add Employee";
+      submitButton.textContent = "Add Employee";
+      cancelEditButton.style.display = "none";
+      showStatus(formStatus, "");
+    }
+
+    function startEdit(employee) {
+      editingEmployeeId = employee.employeeId;
+      document.getElementById("employeeId").value = employee.employeeId;
+      document.getElementById("employeeId").disabled = true;
+      document.getElementById("employeeName").value = employee.employeeName || "";
+      document.getElementById("department").value = employee.department || "";
+      document.getElementById("salary").value = employee.salary ?? "";
+      document.getElementById("formTitle").textContent = "Update Employee";
+      submitButton.textContent = "Save Changes";
+      cancelEditButton.style.display = "block";
+      showStatus(formStatus, `Editing ${employee.employeeId}`);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+
+    form.addEventListener("submit", async event => {
+      event.preventDefault();
+      submitButton.disabled = true;
+      showStatus(formStatus, "Saving...");
+      const employee = {
+        employeeId: document.getElementById("employeeId").value.trim(),
+        employeeName: document.getElementById("employeeName").value.trim(),
+        department: document.getElementById("department").value.trim(),
+        salary: Number(document.getElementById("salary").value)
+      };
+      try {
+        if (editingEmployeeId) {
+          await apiRequest(`/employees/${encodeURIComponent(editingEmployeeId)}`, {
+            method: "PUT",
+            body: JSON.stringify({
+              employeeName: employee.employeeName,
+              department: employee.department,
+              salary: employee.salary
+            })
+          });
+          showStatus(formStatus, "Employee updated successfully.", "success");
+        } else {
+          await apiRequest("/employees", { method: "POST", body: JSON.stringify(employee) });
+          showStatus(formStatus, "Employee created successfully.", "success");
+        }
+        resetForm();
+        await loadEmployees();
+      } catch (error) {
+        showStatus(formStatus, error.message, "error");
+      } finally {
+        submitButton.disabled = false;
+      }
+    });
+
+    async function deleteEmployee(employeeId) {
+      if (!confirm(`Delete employee ${employeeId}? This cannot be undone.`)) return;
+      try {
+        await apiRequest(`/employees/${encodeURIComponent(employeeId)}`, { method: "DELETE" });
+        showStatus(listStatus, `Employee ${employeeId} deleted successfully.`, "success");
+        await loadEmployees();
+      } catch (error) {
+        showStatus(listStatus, error.message, "error");
+      }
+    }
+
+    cancelEditButton.addEventListener("click", resetForm);
+    document.getElementById("refreshButton").addEventListener("click", loadEmployees);
+    loadEmployees();
+  </script>
+</body>
+</html>
